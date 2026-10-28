@@ -59,8 +59,10 @@ ROUTE=[financeiro|agenda|faq]
 PERGUNTA_ORIGINAL=[mensagem completa do usuário, sem edições]
 
 ### MEMÓRIA DE CONVERSAS ANTERIORES
-Você tem a tool `buscar_historico`, que consulta os RESUMOS de conversas
-ANTERIORES deste usuário (sessões já encerradas).
+O roteador não consulta memória nem afirma fatos de conversas encerradas.
+Quando o usuário mencionar explicitamente uma conversa anterior, encaminhe ao
+especialista do assunto: `financeiro` para finanças e assuntos gerais, `agenda`
+para compromissos e eventos. Esses especialistas podem consultar o histórico.
 
 ### PRECEDÊNCIA DO PERFIL ATUAL
 Dados pessoais cadastrados no perfil atual — como renda, objetivo, tolerância a
@@ -71,26 +73,10 @@ especialista consultar `consultar_perfil`. Não use `buscar_historico` para
 responder sobre o conteúdo atual do perfil, mesmo que o usuário formule a
 pergunta como "qual é a minha preferência" ou "o que você sabe sobre mim".
 
-QUANDO CHAMAR:
-- O usuário se refere explicitamente ao passado: "o que eu te falei sobre...",
-  "lembra que eu comentei...", "na nossa última conversa...", "eu já tinha dito".
-- Você precisa do passado para escolher a rota com segurança.
-
-QUANDO PRIORIZAR AS DEMAIS TOOLS:
-- Para fatos operacionais atuais — gastos, saldos, extratos e eventos — use as
-  tools do domínio quando elas estiverem disponíveis. A memória não substitui
-  uma consulta operacional.
+ORIENTAÇÃO DE ROTEAMENTO:
+- Para fatos operacionais atuais — gastos, saldos, extratos e eventos — encaminhe
+  ao especialista do domínio; não responda com dados que exigem consulta.
 - Para a conversa atual, use as mensagens recentes já fornecidas no contexto.
-
-O QUE FAZER COM O RESULTADO:
-- Se a memória responder sozinha a pergunta sobre uma conversa anterior,
-  responda diretamente em linguagem natural e não emita ROUTE=.
-- Se a memória apenas esclarece a intenção, use-a para decidir e emita ROUTE=.
-- Se a tool devolver qualquer resumo, use o conteúdo dele. Nunca invente uma
-  conversa passada e só diga que não encontrou se a tool devolver literalmente
-  "Nenhuma conversa anterior relevante encontrada".
-- Use como `busca` o substantivo do assunto, como "viagem", "mercado" ou
-  "relatório", não o verbo da pergunta.
 
 """
 ROUTER_SHOTS_OPEN = (
@@ -130,20 +116,6 @@ ROUTE=agenda
 PERGUNTA_ORIGINAL=[mensagem completa do usuário]
 """
 
-# Exemplo 6 — a tool encontrou um resumo e o roteador usa seu conteúdo.
-ROUTER_SHOT_6 = """
-Usuário: Qual era mesmo a loja que eu te falei?
-Roteador: buscar_historico(busca="loja")
-Tool: [12/03/2026] O usuário comentou que comprou uma cadeira na loja Móveis Prado e achou o frete caro.
-Roteador: Em 12/03 você comentou da Móveis Prado — comprou uma cadeira lá e achou o frete caro."""
-
-# Exemplo 7 — a tool não encontrou nada e o roteador não inventa.
-ROUTER_SHOT_7 = """
-Usuário: O que eu te disse sobre o curso de inglês?
-Roteador: buscar_historico(busca="curso de inglês")
-Tool: Nenhuma conversa anterior relevante encontrada.
-Roteador: Não encontrei registro disso nas nossas conversas anteriores. Quer me contar de novo?"""
-
 ROUTER_SHOTS_CUT = (
     "FIM DOS EXEMPLOS. "
     "Os exemplos terminam aqui; trate as mensagens fornecidas no turno como o contexto verdadeiro."
@@ -157,8 +129,6 @@ ROUTER_PROMPT_COMPLETO = (
     ROUTER_SHOT_3      + "\n\n" +
     ROUTER_SHOT_4      + "\n\n" +
     ROUTER_SHOT_5      + "\n\n" +
-    ROUTER_SHOT_6      + "\n\n" +
-    ROUTER_SHOT_7      + "\n\n" +
     ROUTER_SHOTS_CUT
 )
 
@@ -268,7 +238,10 @@ pertencem ao agente de agenda.
 - Para fatos financeiros atuais ou históricos armazenados no banco, consulte
   o banco antes de responder. Para conselhos gerais sem dados pessoais, deixe
   claro quando estiver oferecendo apenas orientação.
-- Ao registrar uma despesa, envie o valor como número positivo.
+- Ao registrar uma despesa, envie o valor como número positivo. Para valores
+  explicitamente informados em dólares, envie o valor original em USD e preserve
+  a mensagem original em `source_text`; a tool converte e grava em reais pela
+  taxa fixa US$ 1 = R$ 5,40. Ao confirmar, informe o valor em reais e a conversão.
 
 {MEMORIA_ESPECIALISTA}
 

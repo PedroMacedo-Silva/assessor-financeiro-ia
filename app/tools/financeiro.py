@@ -1,5 +1,6 @@
 import logging
 from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
 from math import isfinite
 from typing import Optional, List
 from langchain.tools import tool
@@ -7,6 +8,24 @@ from pydantic import BaseModel, Field
 from app.tools.db import get_conn
 
 logger = logging.getLogger(__name__)
+
+USD_TO_BRL = Decimal("5.4")
+USD_MARKERS = ("us$", "usd", "dólar", "dolar")
+
+
+def _valor_em_reais(valor: float, source_text: str) -> tuple[float, dict | None]:
+    """Converte valores explicitamente informados em dólares para BRL."""
+    texto = source_text.casefold()
+    if not any(marcador in texto for marcador in USD_MARKERS):
+        return valor
+    original = Decimal(str(valor))
+    convertido = (original * USD_TO_BRL).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(convertido), {
+        "currency_original": "USD",
+        "amount_original": float(original),
+        "exchange_rate": float(USD_TO_BRL),
+        "currency_stored": "BRL",
+    }
 
 
 def _erro_banco(operacao: str, erro: Exception) -> dict:
@@ -63,7 +82,7 @@ def _normalizar_data_local(valor: Optional[str]) -> Optional[str]:
 
 # Essa classe garante que o objeto de Python passe todos esses campos
 class AddTransactionArgs(BaseModel):
-    amount: float = Field(..., description="Valor da transação (use positivo).")
+    amount: float = Field(..., description="Valor positivo informado pelo usuário. Se source_text estiver em USD, informe o valor original em dólares; a tool converte para BRL usando US$1 = R$5,40.")
     source_text: str = Field(..., description="Texto original do usuário.")
     occurred_at: Optional[str] = Field(
         default=None,
@@ -218,6 +237,7 @@ def add_transaction(
         return {"status": "error", "code": "invalid_amount", "message": "O valor deve ser um número finito maior que zero."}
     if not isinstance(source_text, str) or not source_text.strip():
         return {"status": "error", "code": "invalid_source_text", "message": "Informe o texto de origem da transação."}
+    valor, conversao = _valor_em_reais(valor, source_text)
 
     conn = None
     cur = None
@@ -260,7 +280,10 @@ def add_transaction(
 
         new_id, occurred = cur.fetchone()
         conn.commit()
-        return {"status": "ok", "id": new_id, "occurred_at": str(occurred)}
+        resultado = {"status": "ok", "id": new_id, "occurred_at": str(occurred), "amount": valor, "currency": "BRL"}
+        if conversao:
+            resultado["conversion"] = conversao
+        return resultado
 
     except Exception as e:
         _rollback(conn)

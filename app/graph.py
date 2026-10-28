@@ -13,9 +13,10 @@ from app.agents import (
     faq_app,
     financeiro_app,
     orquestrador_app,
-    router_app,
+    router_model,
 )
 from app.tools.financeiro import add_transaction, saldo_total
+from app.prompts import ROUTER_PROMPT_COMPLETO
 from app.guardrail import (
     anonimizar_entrada,
     guardrail_entrada,
@@ -23,10 +24,11 @@ from app.guardrail import (
     limpar_raciocinio,
     normalizar_resposta_usuario,
 )
-from langchain_core.messages import RemoveMessage
+from langchain_core.messages import RemoveMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from app.memory import salvar_mensagem
 from app.observabilidade import abrir_turno, fechar_turno, status_do_estado
+from app.juiz import no_juiz
 
 # ==============================================================================
 # ESTADO
@@ -36,17 +38,18 @@ class Estado(MessagesState):
     rota: str                                  # decisão do roteador
     mapa_pii: dict #tokens -> valores originais gerados na anonimização
     status_turno: str
+    evidencia_turno: str
 
 
 # ==============================================================================
 # NÓS
 # ==============================================================================
 def no_roteador(estado: Estado, config: RunnableConfig) -> dict:
-    saida = router_app.invoke(
-        {"messages": list(estado["messages"])},
+    saida = router_model.invoke(
+        [SystemMessage(content=ROUTER_PROMPT_COMPLETO), *list(estado["messages"])],
         config=config,
     )
-    texto = _texto_mensagem(saida["messages"][-1])
+    texto = _texto_mensagem(saida)
 
     if "ROUTE=" not in texto:
         return {
@@ -117,7 +120,8 @@ def _eh_pedido_de_insercao(texto: str) -> bool:
         return False
     return any(palavra in texto for palavra in (
         "gastei", "comprei", "paguei", "ganhei", "recebi", "registrar",
-        "registre", "lançar", "lancar", "adicionar", "lance",
+        "registre", "registrei", "lançar", "lancar", "adicionar", "adicionei",
+        "anotei", "cadastrei", "lance",
     ))
 
 
@@ -157,10 +161,10 @@ def _data_insercao(texto: str) -> str | None:
     return dia.date().isoformat()
 
 
-def _fallback_insercao(texto: str) -> dict | None:
+def _fallback_insercao(texto: str) -> tuple[dict | None, str]:
     valor = _valor_insercao(texto)
     if valor is None:
-        return None
+        return None, ""
     texto_lower = texto.casefold()
     tipo = "INCOME" if any(palavra in texto_lower for palavra in ("ganhei", "recebi", "salário", "salario", "receita")) else "EXPENSES"
     data = _data_insercao(texto)
@@ -172,20 +176,45 @@ def _fallback_insercao(texto: str) -> dict | None:
         "type_name": tipo,
         "description": texto,
     })
-    if resultado.get("status") == "ok":
-        return {
+    if resultado.get("status") == "ok" and resultado.get("id") is not None:
+        valor_registrado = resultado.get("amount", valor)
+        conversao = resultado.get("conversion")
+        detalhe_conversao = (
+            f" (US$ {conversao['amount_original']:,.2f} × R$ {conversao['exchange_rate']:.2f}/US$)"
+            if conversao else ""
+        )
+        especialista = {
             "dominio": "financeiro",
             "intencao": "inserir",
-            "resposta": f"Registrei a transação de R$ {valor:,.2f} no banco de dados.".replace(",", "X").replace(".", ",").replace("X", "."),
+            "resposta": f"Registrei R$ {valor_registrado:,.2f}{detalhe_conversao} no banco de dados.".replace(",", "X").replace(".", ",").replace("X", "."),
             "recomendacao": "",
             "escrita": {"operacao": "adicionar", "id": resultado.get("id")},
         }
+        return especialista, json.dumps(resultado, ensure_ascii=False)
     return {
         "dominio": "financeiro",
         "intencao": "inserir",
-        "resposta": "Não consegui registrar essa transação no banco de dados.",
-        "recomendacao": "Tente novamente em instantes.",
-    }
+        "resposta": "Não consegui confirmar a gravação. Verifique o extrato antes de tentar novamente.",
+        "recomendacao": "",
+    }, json.dumps(resultado, ensure_ascii=False)
+
+
+def _evidencias_tools(mensagens) -> str:
+    """Preserva no grafo principal os argumentos e resultados das tools financeiras."""
+    evidencias = []
+    for mensagem in mensagens:
+        tipo = mensagem.get("role", "") if isinstance(mensagem, dict) else getattr(mensagem, "type", "")
+        if tipo in ("ai", "assistant"):
+            chamadas = mensagem.get("tool_calls", []) if isinstance(mensagem, dict) else getattr(mensagem, "tool_calls", [])
+            for chamada in chamadas or []:
+                nome = chamada.get("name", "tool")
+                argumentos = chamada.get("args", {})
+                evidencias.append(f"[chamada {nome}]\n{json.dumps(argumentos, ensure_ascii=False)}")
+        elif tipo == "tool":
+            nome = mensagem.get("name", "tool") if isinstance(mensagem, dict) else getattr(mensagem, "name", "tool")
+            conteudo = mensagem.get("content", "") if isinstance(mensagem, dict) else getattr(mensagem, "content", "")
+            evidencias.append(f"[{nome}]\n{_texto_mensagem(mensagem) or conteudo}")
+    return "\n\n".join(evidencias)
 
 
 def _json_especialista_valido(texto: str) -> bool:
@@ -406,6 +435,7 @@ def no_financeiro(estado: Estado, config: RunnableConfig) -> dict:
     except Exception:
         return {
             "agentes_chamados": ["financeiro"],
+            "evidencia_turno": "",
             "messages": [{
                 "role": "assistant",
                 "content": json.dumps({
@@ -419,8 +449,14 @@ def no_financeiro(estado: Estado, config: RunnableConfig) -> dict:
     mensagens = saida.get("messages", [])
     indice_usuario = _indice_ultima_mensagem_usuario(mensagens)
     mensagens_do_turno = mensagens[indice_usuario + 1:] if indice_usuario >= 0 else mensagens
+    evidencia_turno = _evidencias_tools(mensagens_do_turno)
     chamou_tool = any(
         (mensagem.get("role") if isinstance(mensagem, dict) else getattr(mensagem, "type", "")) == "tool"
+        for mensagem in mensagens_do_turno
+    )
+    chamou_add_transaction = any(
+        (mensagem.get("role") if isinstance(mensagem, dict) else getattr(mensagem, "type", "")) == "tool"
+        and (mensagem.get("name", "") if isinstance(mensagem, dict) else getattr(mensagem, "name", "")) == "add_transaction"
         for mensagem in mensagens_do_turno
     )
     indice_pergunta = _indice_ultima_mensagem_usuario(estado["messages"])
@@ -471,31 +507,71 @@ def no_financeiro(estado: Estado, config: RunnableConfig) -> dict:
             }
         return {
             "agentes_chamados": ["financeiro"],
+            "evidencia_turno": evidencia_turno + "\n\n[saldo_total]\n" + json.dumps(resultado, ensure_ascii=False),
             "messages": [{"role": "assistant", "content": json.dumps(especialista, ensure_ascii=False)}],
         }
 
     # Para inserções simples, se o modelo não emitiu a chamada da tool,
     # extraímos somente os dados inequívocos e registramos de forma explícita.
     # Se faltar valor ou a intenção não for clara, não fazemos nenhuma escrita.
-    if _eh_pedido_de_insercao(pergunta):
+    if _eh_pedido_de_insercao(pergunta) or chamou_add_transaction:
         resultado_adicao = _ultimo_resultado_tool(mensagens_do_turno, "add_transaction")
-        if resultado_adicao and resultado_adicao.get("status") == "ok":
+        if resultado_adicao and resultado_adicao.get("status") == "ok" and resultado_adicao.get("id") is not None:
+            conversao = resultado_adicao.get("conversion")
+            if conversao:
+                valor_formatado = f"{resultado_adicao['amount']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                dolar_formatado = f"{conversao['amount_original']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                resposta_registro = (
+                    f"Registrei R$ {valor_formatado}, convertidos de US$ {dolar_formatado} "
+                    "pela taxa fixa de R$ 5,40 por dólar."
+                )
+            else:
+                resposta_registro = "A transação foi registrada no banco de dados."
             especialista = {
                 "dominio": "financeiro",
                 "intencao": "inserir",
-                "resposta": "A transação foi registrada no banco de dados.",
+                "resposta": resposta_registro,
                 "recomendacao": "",
                 "escrita": {"operacao": "adicionar", "id": resultado_adicao.get("id")},
             }
-        elif not chamou_tool:
-            especialista = _fallback_insercao(pergunta)
+        elif not chamou_add_transaction:
+            especialista, evidencia_fallback = _fallback_insercao(pergunta)
+            evidencia_turno = evidencia_fallback or evidencia_turno
         else:
-            especialista = None
-        if especialista is not None:
-            return {
-                "agentes_chamados": ["financeiro"],
-                "messages": [{"role": "assistant", "content": json.dumps(especialista, ensure_ascii=False)}],
+            especialista = {
+                "dominio": "financeiro",
+                "intencao": "inserir",
+                "resposta": "Não consegui confirmar a gravação. Verifique o extrato antes de tentar novamente.",
+                "recomendacao": "",
             }
+        if especialista is None:
+            especialista = {
+                "dominio": "financeiro",
+                "intencao": "inserir",
+                "resposta": "Qual foi o valor e a moeda da transação?",
+                "recomendacao": "",
+                "esclarecer": "Informe o valor e a moeda para eu registrar.",
+            }
+        return {
+            "agentes_chamados": ["financeiro"],
+            "evidencia_turno": evidencia_turno,
+            "messages": [{"role": "assistant", "content": json.dumps(especialista, ensure_ascii=False)}],
+        }
+
+    # Uma resposta do modelo que afirma inserção sem sucesso confirmado da tool
+    # não pode ser apresentada como gravação concluída.
+    dados_financeiros = _extrair_json_especialista(texto_financeiro)
+    if dados_financeiros and dados_financeiros.get("intencao") == "inserir":
+        return {
+            "agentes_chamados": ["financeiro"],
+            "evidencia_turno": evidencia_turno,
+            "messages": [{"role": "assistant", "content": json.dumps({
+                "dominio": "financeiro",
+                "intencao": "inserir",
+                "resposta": "Não consegui confirmar a gravação. Verifique o extrato antes de tentar novamente.",
+                "recomendacao": "",
+            }, ensure_ascii=False)}],
+        }
 
     # Uma operação financeira não pode terminar com texto de prontidão,
     # instruções internas ou qualquer saída que não seja o JSON contratado.
@@ -503,6 +579,7 @@ def no_financeiro(estado: Estado, config: RunnableConfig) -> dict:
     if _parece_operacao_financeira(pergunta) and texto_financeiro and not _json_especialista_valido(texto_financeiro):
         return {
             "agentes_chamados": ["financeiro"],
+            "evidencia_turno": evidencia_turno,
             "messages": [{
                 "role": "assistant",
                 "content": json.dumps({
@@ -514,7 +591,7 @@ def no_financeiro(estado: Estado, config: RunnableConfig) -> dict:
             }],
         }
 
-    return saida
+    return {**saida, "evidencia_turno": evidencia_turno}
 
 
 def no_orquestrador(estado: Estado, config: RunnableConfig) -> dict:
@@ -620,6 +697,7 @@ def no_guardrail_entrada(estado: Estado, config: RunnableConfig) -> dict:
         "agentes_chamados": ["guardrail_entrada"],
         "rota": "roteador",
         "status_turno": "ok",
+        "evidencia_turno": "",
         "mapa_pii": mapa_pii,
         "messages": [
             RemoveMessage(id=puser.id),
@@ -660,6 +738,7 @@ grafo.add_node("agenda",       no_agenda)
 grafo.add_node("faq",          faq_app)
 grafo.add_node("orquestrador", no_orquestrador)
 grafo.add_node("guardrail_saida", no_guardrail_saida)
+grafo.add_node("juiz", no_juiz)
 
 grafo.set_entry_point("guardrail_entrada")
 
@@ -683,11 +762,12 @@ grafo.add_conditional_edges(
     },
 )
 
-grafo.add_edge("financeiro",   "orquestrador")
-grafo.add_edge("agenda",       "orquestrador")
-grafo.add_edge("orquestrador", "guardrail_saida")
-grafo.add_edge("guardrail_saida", END)
-grafo.add_edge("faq",          END)   # FAQ bypassa o orquestrador
+grafo.add_edge("financeiro",      "orquestrador")
+grafo.add_edge("agenda",          "orquestrador")
+grafo.add_edge("orquestrador",    "guardrail_saida")
+grafo.add_edge("guardrail_saida", "juiz")
+grafo.add_edge("faq",             "juiz")
+grafo.add_edge("juiz",            END)   # FAQ bypassa o orquestrador
 
 # Memória centralizada no grafo — persiste o Estado inteiro entre turns
 memory = MemorySaver()
@@ -708,6 +788,7 @@ def executar_fluxo_assessor_detalhado(
         "mapa_pii": {},
         "session_id": session_id,
         "status_turno": "ok",
+        "evidencia_turno": "",
     }
 
     turno_id = abrir_turno()

@@ -19,6 +19,7 @@ MONGODB_URI    = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DB     = os.getenv("MONGODB_DB", "assessor")
 QDRANT_URL     = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+TYPESAFE_API_KEY = os.getenv("TYPESAFE_API_KEY")
 GOOGLE_OAUTH_CREDENTIALS = os.getenv(
     "GOOGLE_OAUTH_CREDENTIALS",
     str(BASE_DIR / "gcp-oauth.keys.json"),

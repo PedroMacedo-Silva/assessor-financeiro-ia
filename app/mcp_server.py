@@ -108,14 +108,15 @@ def daily_balance(
     name="add_transaction",
     title="Registrar transação",
     description=(
-        "Registra uma transação financeira. Valor positivo e texto de origem são obrigatórios. "
+        "Registra uma transação financeira em reais. Valor positivo e texto de origem são obrigatórios. "
+        "Para valores explicitamente em USD, informe o valor original em dólares; a tool converte pela taxa fixa US$1 = R$5,40. "
         "Use nomes de tipo e categoria, sem IDs. occurred_at, se informado, deve ser timestamp ISO 8601."
     ),
     annotations=ESCRITA,
     structured_output=True,
 )
 def add_transaction(
-    amount: Annotated[float, Field(description="Valor positivo da transação.")],
+    amount: Annotated[float, Field(description="Valor positivo informado pelo usuário. Se source_text estiver em USD, use o valor original em dólares; a tool converte para BRL a R$5,40 por US$1.")],
     source_text: Annotated[str, Field(description="Texto original que identifica a transação.")],
     occurred_at: Annotated[Optional[str], Field(description="Timestamp ISO 8601; omitido, usa o horário atual.")] = None,
     type_name: Annotated[Optional[str], Field(description="Tipo: INCOME, EXPENSES ou TRANSFER; omitido, usa despesa.")] = None,
