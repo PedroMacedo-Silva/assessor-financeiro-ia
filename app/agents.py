@@ -19,6 +19,7 @@ from app.tools.calendario_google import TOOLS_GOOGLE
 from app.tools.faq import faq_retriever
 from app.tools.financeiro import TOOLS
 from app.tools.memoria import TOOLS_MEMORIA
+from app.tools.propostas import preparar_add_event, preparar_add_transaction, preparar_update_transaction
 
 
 def _resultados_tool(mensagens, nome_tool: str) -> list[dict]:
@@ -146,15 +147,24 @@ def _ordenar_gravacoes_agenda(request, handler):
 # ROUTE=..., enquanto os especialistas executam as tools depois.
 router_model = llm_rapido.with_fallbacks([llm_gemini])
 
+TOOLS_FINANCEIRO_ADIADAS = [
+    preparar_add_transaction if item.name == "add_transaction"
+    else preparar_update_transaction if item.name == "update_transaction"
+    else item for item in TOOLS
+]
+TOOLS_AGENDA_ADIADAS = [
+    preparar_add_event if item.name == "add_event" else item for item in TOOLS_AGENDA
+]
+
 financeiro_app = create_agent(
     model=llm_especialista,
-    tools=TOOLS + TOOLS_MEMORIA + TOOLS_PERFIL,
+    tools=TOOLS_FINANCEIRO_ADIADAS + TOOLS_MEMORIA + TOOLS_PERFIL,
     system_prompt=FINANCEIRO_PROMPT_COMPLETO,
 )
 
 agenda_app = create_agent(
     model=llm_especialista,
-    tools=TOOLS_AGENDA + TOOLS_GOOGLE + TOOLS_MEMORIA,
+    tools=TOOLS_AGENDA_ADIADAS + TOOLS_GOOGLE + TOOLS_MEMORIA,
     middleware=[_prompt_agenda_dinamico, _ordenar_gravacoes_agenda],
 )
 

@@ -140,7 +140,12 @@ def no_juiz(estado: dict) -> dict:
     if not resposta:
         return {"agentes_chamados": ["juiz:sem_resposta"]}
     try:
-        return _julgar_jev(pergunta, resposta, evidencia)
+        resultado = _julgar_jev(pergunta, resposta, evidencia)
+        rotulo = (resultado.get("agentes_chamados") or [""])[0]
+        resultado["juiz_aprovou"] = rotulo.startswith("juiz:apoiada ")
+        return resultado
     except Exception as exc:
         print(f"[juiz] erro {exc}")
-        return _publicar(FRASE_SEGURA, "erro", resposta)
+        resultado = _publicar(FRASE_SEGURA, "erro", resposta)
+        resultado["juiz_aprovou"] = False
+        return resultado
