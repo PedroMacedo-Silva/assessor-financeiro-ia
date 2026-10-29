@@ -17,7 +17,7 @@ def _valor_em_reais(valor: float, source_text: str) -> tuple[float, dict | None]
     """Converte valores explicitamente informados em dólares para BRL."""
     texto = source_text.casefold()
     if not any(marcador in texto for marcador in USD_MARKERS):
-        return valor
+        return valor, None
     original = Decimal(str(valor))
     convertido = (original * USD_TO_BRL).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return float(convertido), {
