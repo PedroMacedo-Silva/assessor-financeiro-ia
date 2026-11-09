@@ -1,0 +1,48 @@
+name: CI e deploy no Render
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    env:
+      GEMINI_API_KEY: chave-ficticia-para-testes
+      GROQ_API_KEY: chave-ficticia-para-testes
+      DATABASE_URL: postgresql://teste:teste@localhost:5432/teste
+      MONGODB_URI: mongodb://localhost:27017
+      QDRANT_URL: http://localhost:6333
+      QDRANT_API_KEY: chave-ficticia-para-testes
+    steps:
+      - name: Obter codigo
+        uses: actions/checkout@v4
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+      - name: Instalar dependencias
+        run: python -m pip install -r requirements.txt
+      - name: Verificar sintaxe
+        run: python -m compileall -q app tests
+      - name: Executar testes
+        run: python -m unittest discover -s tests -v
+
+  deploy:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Solicitar deploy do commit testado
+        env:
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          test -n "$DEPLOY_HOOK" || { echo 'Secret RENDER_DEPLOY_HOOK_URL ausente'; exit 1; }
+          curl --fail --silent --show-error --request POST --get --data-urlencode "ref=$COMMIT_SHA" "$DEPLOY_HOOK" --output /dev/null
