@@ -303,18 +303,19 @@ class GraphAndMcpContractTests(unittest.TestCase):
                 cliente.close()
 
     def test_google_write_requires_successful_local_event_in_current_turn(self):
-        from app import graph
+        from app.agents import _ordenar_gravacoes_agenda
+        from langchain_core.messages import ToolMessage
 
         request = SimpleNamespace(
             tool_call={"name": "add_google_event", "id": "google-call", "args": {}},
             state={"messages": [{"role": "human", "content": "agenda"}]},
         )
-        result = graph._ordenar_gravacoes_agenda.wrap_tool_call(request, lambda _request: "called")
-        self.assertIsInstance(result, graph.ToolMessage)
+        result = _ordenar_gravacoes_agenda.wrap_tool_call(request, lambda _request: "called")
+        self.assertIsInstance(result, ToolMessage)
         self.assertEqual(json.loads(result.content)["code"], "google_requires_local_success")
 
     def test_google_write_follows_local_success_and_matches_saved_fields(self):
-        from app import graph
+        from app.agents import _ordenar_gravacoes_agenda
 
         local = {
             "status": "ok", "id": 25, "title": "Reunião",
@@ -334,10 +335,10 @@ class GraphAndMcpContractTests(unittest.TestCase):
                 {"role": "tool", "name": "add_event", "content": json.dumps(local)},
             ]},
         )
-        self.assertEqual(graph._ordenar_gravacoes_agenda.wrap_tool_call(request, lambda _request: "called"), "called")
+        self.assertEqual(_ordenar_gravacoes_agenda.wrap_tool_call(request, lambda _request: "called"), "called")
 
     def test_google_write_is_not_repeated_after_an_uncertain_attempt(self):
-        from app import graph
+        from app.agents import _ordenar_gravacoes_agenda
 
         local = {
             "status": "ok", "id": 25, "title": "Reunião",
@@ -359,7 +360,7 @@ class GraphAndMcpContractTests(unittest.TestCase):
             chamado = True
             return "called"
 
-        result = graph._ordenar_gravacoes_agenda.wrap_tool_call(request, handler)
+        result = _ordenar_gravacoes_agenda.wrap_tool_call(request, handler)
         self.assertEqual(json.loads(result.content)["code"], "google_creation_already_attempted")
         self.assertFalse(chamado)
 
